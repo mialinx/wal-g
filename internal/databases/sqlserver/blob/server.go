@@ -1,6 +1,7 @@
 package blob
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -585,6 +586,76 @@ func (bs *Server) HandleBlobGet(w http.ResponseWriter, req *http.Request) {
 			break
 		}
 	}
+}
+
+type MultiReader struct {
+	folder  storage.Folder
+	paths   []string
+	current int
+	r       io.Reader
+}
+
+func (mr *MultiReader) AddPath(p string) {
+	mr.paths = append(mr.paths, p)
+}
+
+func (mr *MultiReader) Read(buf []byte) (int, error) {
+	for mr.current < len(mr.paths) {
+		if mr.r == nil {
+			r, err := mr.folder.ReadObject(mr.paths[mr.current])
+			if err != nil {
+				return 0, err
+			}
+			mr.r = r
+		}
+		sz, err := mr.r.Read(buf)
+		if err == io.EOF {
+			mr.current += 1
+			mr.r = nil
+			err = nil
+			if sz == 0 {
+				continue
+			}
+		}
+		return sz, err
+	}
+	return 0, io.EOF
+}
+
+func (bs *Server) DirectGetBlob(blobPath string) (io.Reader, error) {
+	folder := bs.getBlobFolder(blobPath)
+	idx, err := bs.loadBlobIndex(folder)
+	if err != nil {
+		return nil, err
+	}
+	mr := new(MultiReader)
+	sections := idx.GetSections(0, idx.Size)
+	for _, s := range sections {
+		mr.AddPath(s.Path)
+	}
+	return mr, nil
+}
+
+func (bs *Server) DirectPutBlob(blobPath string, r io.Reader) error {
+	folder := bs.getBlobFolder(blobPath)
+	idx, err := bs.loadBlobIndex(folder)
+	if err == ErrNotFound {
+		idx = NewIndex(folder)
+	} else if err != nil {
+		return err
+	}
+	const bufSize = 64 * 1024 * 1024
+	buf := bytes.NewBuffer(make([]byte, bufSize))
+	for i := 0; ; i++ {
+		sz, err := io.ReadFull(r, buf)
+		if err != nil {
+			if err == io.EOF {
+
+			}
+		}
+		name := idx.PutBlock(fmt.Sprintf("data_%d", i), sz)
+	}
+	return nil
 }
 
 func (bs *Server) HandleBlobPut(w http.ResponseWriter, req *http.Request) {
